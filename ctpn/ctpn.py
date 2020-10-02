@@ -117,6 +117,7 @@ class CTPN_Model(nn.Module):
         base_model = models.vgg16(pretrained=False)
         layers = list(base_model.features)[:-1]
         self.base_layers = nn.Sequential(*layers)
+        # stride 1, 0paddingを画像の両サイドに追加する(padding=1)ことで画像サイズを変えないようにする
         self.rpn = basic_conv(512, 512, 3, 1, 1, bn=False)
         self.brnn = nn.GRU(512,128, bidirectional=True, batch_first=True)
         self.lstm_fc = basic_conv(256, 512, 1, 1, relu=True, bn=False)
@@ -126,8 +127,9 @@ class CTPN_Model(nn.Module):
     def forward(self, x):
         x = self.base_layers(x)
         # rpn
-        x = self.rpn(x)    #[b, c, h, w]
+        x = self.rpn(x)    #[b, c, h, w](画像の枚数、チャンネル数、高さ、幅)
 
+        
         x1 = x.permute(0, 2, 3, 1).contiguous()  # channels last   [b, h, w, c]
         b = x1.size()  # b, h, w, c
         x1 = x1.view(b[0]*b[1], b[2], b[3])
