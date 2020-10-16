@@ -16,15 +16,34 @@ def gen_anchor( featuresize, scale,
                 heights = [11, 16, 23, 33, 48, 68, 97, 139, 198, 283], 
                 widths = [16, 16, 16, 16, 16, 16, 16, 16, 16, 16]):
     h, w = featuresize
-    shift_x = np.arange(0, w) * scale
-    shift_y = np.arange(0, h) * scale
+    shift_x = np.arange(0, w) * scale # [0, 16, 32, ..., 224(元画像幅)]
+    shift_y = np.arange(0, h) * scale # [0, 16, 32, ..., 224(元画像高さ)]
     shift_x, shift_y = np.meshgrid(shift_x, shift_y)
+    # shift_x
+    # [[0, 16, 32, 48, 64, ,,,,,, 224],
+    #  [0, 16. .. .......         224]
+    #   ...
+    #  [0, .                      224]]
+
+    # shift_y
+    # [[0, 0, 0, 0, .              0]
+    #  [16, 16, 16, .. .....      16]
+    #  .....
+    #  ....
+    #  [224, 224, 224, .....     224]]
     shift = np.stack((shift_x.ravel(), shift_y.ravel(), shift_x.ravel(), shift_y.ravel()), axis=1)
+    # shift_x, shift_y, shift_x, shift_yの順で縦に並べる
+    # [[0,  0,  0, 0],
+    #  [16, 0, 16, 0],
+    #  [32, 0, 32, 0],
+    # ....
+    # ]
 
     #base center(x,,y) -> (x1, y1, x2, y2)
     base_anchor = np.array([0, 0, 15, 15])
-    xt = (base_anchor[0] + base_anchor[2]) * 0.5
-    yt = (base_anchor[1] + base_anchor[3]) * 0.5
+    xt = (base_anchor[0] + base_anchor[2]) * 0.5 # 7.5
+    yt = (base_anchor[1] + base_anchor[3]) * 0.5 # 7.5
+    # それぞれの値を配列にする
     heights = np.array(heights).reshape(len(heights), 1)
     widths = np.array(widths).reshape(len(widths), 1)
     x1 = xt - widths * 0.5
@@ -32,6 +51,7 @@ def gen_anchor( featuresize, scale,
     x2 = xt + widths * 0.5
     y2 = yt + heights * 0.5
     base_anchor = np.hstack((x1, y1, x2, y2))
+    # アンカー一覧を作る
     
     anchor = list()
     for i in range(base_anchor.shape[0]):
@@ -42,13 +62,20 @@ def gen_anchor( featuresize, scale,
         anchor.append(np.dstack((anchor_x1, anchor_y1, anchor_x2, anchor_y2)))
 
     return np.squeeze(np.array(anchor)).transpose((1,0,2)).reshape((-1, 4))
+    # [[xmin, ymin, xmax, ymax]
+    #  [xmin, ymin, xmax, ymax]
+    # ]
 
 '''
 anchor 与 bbox的 iou计算
 iou = inter_area/(bb_area + anchor_area - inter_area)
 '''
 def compute_iou(anchors, bbox):
+    # anchors: 適当に画像上に作成した矩形
+    # bbox: 画像のどこに検出対象があるかを示した矩形
+    # ious: あるアンカーとあるboxについて、その面積の合計に対して、どれくらいかぶりがあるかを持つ
     ious = np.zeros((len(anchors), len(bbox)), dtype=np.float32)
+    # anchor_area: アンカーの面積のリスト
     anchor_area = (anchors[:,2] - anchors[:,0])*(anchors[:,3] - anchors[:,1])
     for num, _bbox in enumerate(bbox):
         bb = np.tile(_bbox,(len(anchors), 1))
@@ -67,16 +94,23 @@ def compute_iou(anchors, bbox):
     Vh = np.log(gt_h / anchor_h)
 '''
 def bbox_transfrom(anchors, gtboxes):
-    gt_y = (gtboxes[:, 1] + gtboxes[:, 3]) * 0.5
-    gt_h = gtboxes[:, 3] - gtboxes[:, 1] + 1.0
+    # anchors: 適当に作成したアンカー
+    # 各アンカーと最も重なりが大きい、画像の検出対象を示す領域
+    gt_y = (gtboxes[:, 1] + gtboxes[:, 3]) * 0.5 # 検出領域の中心y座標
+    gt_h = gtboxes[:, 3] - gtboxes[:, 1] + 1.0 # 検出領域の高さ
 
-    anchor_y = (anchors[:, 1] + anchors[:, 3]) * 0.5
-    anchor_h = anchors[:, 3] - anchors[:, 1] + 1.0
+    anchor_y = (anchors[:, 1] + anchors[:, 3]) * 0.5 # アンカー領域の中心座標
+    anchor_h = anchors[:, 3] - anchors[:, 1] + 1.0 # アンカー領域の高さ
 
-    Vc = (gt_y - anchor_y) / anchor_h
-    Vh = np.log(gt_h / anchor_h)
+    Vc = (gt_y - anchor_y) / anchor_h # 中心y座標のずれ
+    Vh = np.log(gt_h / anchor_h) # 高さのずれ
 
     return np.vstack((Vc, Vh)).transpose()
+    # [[アンカー1とボックス１の中心y座標のずれ、高さのずれ],
+    #  [アンカー2とボックス１の中心y座標のずれ、高さのずれ],
+    #  [アンカー3とボックス１の中心y座標のずれ、高さのずれ]
+    # ]
+    # 
 
 '''
 已知 anchor和差异参数 regression_factor(Vc, Vh),计算目标框 bbox
@@ -137,18 +171,27 @@ RPN module
 6、求取anchor 取得max_overlap 时的gtbbox之间的真值差异量(Vc, Vh)
 '''
 def cal_rpn(imgsize, featuresize, scale, gtboxes):
-    base_anchor = gen_anchor(featuresize, scale)
-    overlaps = compute_iou(base_anchor, gtboxes)
+    # imgsize: (h, w) 元画像のサイズ
+    # featuresize: featuremap1枚のサイズ
+    # scale: featureマップのサイズとimgsizeの比
+    # gtboxes: 画像のどこにテキストが含まれているかを表す矩形
+    #          矩形はそれぞれ、縦に16等分されている
 
-    gt_argmax_overlaps = overlaps.argmax(axis=0)
-    anchor_argmax_overlaps = overlaps.argmax(axis=1)
-    anchor_max_overlaps = overlaps[range(overlaps.shape[0]), anchor_argmax_overlaps]
+    base_anchor = gen_anchor(featuresize, scale) # 適当にアンカーを作成する
+    overlaps = compute_iou(base_anchor, gtboxes) # 適当に作ったアンカーそれぞれについて、gtboxesとどれだけ面積がかぶっているかを計算する
+
+    gt_argmax_overlaps = overlaps.argmax(axis=0) # あるbboxについて、もっとも重なりが大きいanchorのインデックス
+    anchor_argmax_overlaps = overlaps.argmax(axis=1) # あるアンカーについて、もっとも重なりが大きいbboxのインデックス
+    anchor_max_overlaps = overlaps[range(overlaps.shape[0]), anchor_argmax_overlaps] # あるアンカーについて、もっとも重なりが大きいbboxとの重なりの割合
 
     labels = np.empty(base_anchor.shape[0])
-    labels.fill(-1)
+    labels.fill(-1) # [-1, -1, -1, ...., -1] len(labels) == len(base_anchor)
     labels[gt_argmax_overlaps] = 1
     labels[anchor_max_overlaps > IOU_POSITIVE] = 1
     labels[anchor_max_overlaps < IOU_NEGATIVE] = 0
+    # 閾値より大きかったらそこは検出対象領域認定する
+    # 閾値より小さかったらそこは検出対象ではない
+    # 各boxについて、もっとも重なり領域が大きかったanchorは検出対象領域認定する
 
     outside_anchor = np.where(
         (base_anchor[:, 0] < 0) |
@@ -157,19 +200,28 @@ def cal_rpn(imgsize, featuresize, scale, gtboxes):
         (base_anchor[:, 3] >= imgsize[0])
     )[0]
     labels[outside_anchor] = -1
+    # アンカーが外にはみ出しているものは-1を立てる
 
-    fg_index = np.where(labels == 1)[0]
-    if (len(fg_index) > RPN_POSITIVE_NUM):
+    fg_index = np.where(labels == 1)[0] # 検出対象のアンカーのインデックス
+    if (len(fg_index) > RPN_POSITIVE_NUM): # 検出対象のアンカーの数が閾値を越えたら
+        # 閾値から越えた分だけランダムにアンカーを選んで検出対象から外す
         labels[np.random.choice(fg_index, len(fg_index) - RPN_POSITIVE_NUM, replace=False)] = -1
     if not OHEM:
-        bg_index = np.where(labels == 0)[0]
-        num_bg = RPN_TOTAL_NUM - np.sum(labels == 1)
+        bg_index = np.where(labels == 0)[0] # 検出対象でない(範囲外、閾値超過分を除く)アンカーのインデックス
+        num_bg = RPN_TOTAL_NUM - np.sum(labels == 1) #  
         if (len(bg_index) > num_bg):
+            # 1と0が入っているlabelの数を調整する
+            # 合計でRPN_TOTAL_NUM個の0, 1があるようにする
+            # 残りは-1に
             labels[np.random.choice(bg_index, len(bg_index) - num_bg, replace=False)] = -1
 
     bbox_targets = bbox_transfrom(base_anchor, gtboxes[anchor_argmax_overlaps, :])
 
     return [labels, bbox_targets]
+    # labels: 各アンカーについて、それが認識領域か、そうでないか、を表すリスト
+    #         認識領域と認められるアンカーの枚数のトータルは150枚を越えないようにする
+    # bbox:   各アンカーについて、それと一番かぶっているボックスとのどれくらいずれているかを表す
+    #         アンカーがどのボックスともかぶっていない場合は、0番目のboxが使われる
 
 
 '''

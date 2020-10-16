@@ -56,34 +56,36 @@ class RPN_CLS_Loss(nn.Module):
         self.L_cls = nn.CrossEntropyLoss(reduction='none')
 
     def forward(self, input, target):
+        # input: 学習器から出てきたcls分類の結果 shape -> [b, h * w * 10, 2]
+        # target: 正解 shape -> (batch_size, (1, (anchor_size)))
         if config.OHEM:
-            cls_gt = target[0][0]
+            cls_gt = target[0][0] # 各アンカーについて、それが検出対象かどうか
             num_pos = 0
             loss_pos_sum = 0
 
             if len((cls_gt == 1).nonzero()) != 0: 
-                cls_pos = (cls_gt == 1).nonzero()[:, 0]
-                gt_pos = cls_gt[cls_pos].long()
-                cls_pred_pos = input[0][cls_pos]
-                loss_pos = self.L_cls(cls_pred_pos.view(-1, 2), gt_pos.view(-1))
-                loss_pos_sum = loss_pos.sum()
-                num_pos = len(loss_pos)
+                cls_pos = (cls_gt == 1).nonzero()[:, 0] # 検出対象となるアンカー(正解)のインデックスを取得
+                gt_pos = cls_gt[cls_pos].long() # [1, 1, ...., 1, 1, 1]
+                cls_pred_pos = input[0][cls_pos] # 学習器から出てきたinputの検出対象となるアンカーの行列のみ抜き出す
+                loss_pos = self.L_cls(cls_pred_pos.view(-1, 2), gt_pos.view(-1)) # ロスを計算
+                loss_pos_sum = loss_pos.sum() # ロスの合計
+                num_pos = len(loss_pos) # 検出対象となるアンカーが何個あったかを保存
 
-            cls_neg = (cls_gt == 0).nonzero()[:, 0]
-            gt_neg = cls_gt[cls_neg].long()
-            cls_pred_neg = input[0][cls_neg]
+            cls_neg = (cls_gt == 0).nonzero()[:, 0] # 検出対象でないアンカーのインデックスの取得
+            gt_neg = cls_gt[cls_neg].long() # [0, 0, 0, 0, 0, 0, 0]
+            cls_pred_neg = input[0][cls_neg] # 学習器から出てきたinputの検出対象でないアンカーの行列のみ抜き出す
 
-            loss_neg = self.L_cls(cls_pred_neg.view(-1, 2), gt_neg.view(-1))
-            loss_neg_topK, _ = torch.topk(loss_neg, min(len(loss_neg), config.RPN_TOTAL_NUM - num_pos))
-            loss_cls = loss_pos_sum + loss_neg_topK.sum()
-            loss_cls = loss_cls / config.RPN_TOTAL_NUM
+            loss_neg = self.L_cls(cls_pred_neg.view(-1, 2), gt_neg.view(-1)) # ロスの計算
+            loss_neg_topK, _ = torch.topk(loss_neg, min(len(loss_neg), config.RPN_TOTAL_NUM - num_pos)) # 閾値を越えないよう数だけ大きい順に抜きだす
+            loss_cls = loss_pos_sum + loss_neg_topK.sum() # 1がちゃんと検出対象であるか＆0がちゃんと検出対象でないかの合計
+            loss_cls = loss_cls / config.RPN_TOTAL_NUM # 正規化
 
             return loss_cls.to(self.device)
         else:
-            y_true = target[0][0]
-            cls_keep = (y_true != -1).nonzero()[:, 0]
-            cls_true = y_true[cls_keep].long()
-            cls_pred = input[0][cls_keep]
+            y_true = target[0][0] # 各アンカーについて、それが検出対象かどうか
+            cls_keep = (y_true != -1).nonzero()[:, 0] # 値が(0, 1)のインデックスを取得
+            cls_true = y_true[cls_keep].long() # [[0,1]*]
+            cls_pred = input[0][cls_keep] # 正解ラベルのほうの値が(0, 1)のインデックスに対応する値を取得
             loss = F.nll_loss(F.log_softmax(cls_pred, dim=-1), cls_true)
             loss = torch.clamp(torch.mean(loss), 0, 10) if loss.numel() > 0 else torch.tensor(0.0)
 
@@ -126,31 +128,35 @@ class CTPN_Model(nn.Module):
 
     def forward(self, x):
         x = self.base_layers(x)
+        # h: feature map1枚の縦の長さ(元画像の高さの1/16)
+        # w: feature map1枚の横の長さ(元画像の幅の1/16)
         # rpn
         x = self.rpn(x)    #[b, c, h, w](画像の枚数、チャンネル数、高さ、幅)
 
         
-        x1 = x.permute(0, 2, 3, 1).contiguous()  # channels last   [b, h, w, c]
+        x1 = x.permute(0, 2, 3, 1).contiguous()  # channels last   [b, h, w, c: 512]
         b = x1.size()  # b, h, w, c
-        x1 = x1.view(b[0]*b[1], b[2], b[3])
+        x1 = x1.view(b[0]*b[1], b[2], b[3]) # b * h, w, c
 
         x2, _ = self.brnn(x1)
+        # x2.size() [b * h, w, 256]
 
-        xsz = x.size()
-        x3 = x2.view(xsz[0], xsz[2], xsz[3], 256)  # torch.Size([4, 20, 20, 256])
+        xsz = x.size() # [b, c, h, w]
+        print(xsz)
+        x3 = x2.view(xsz[0], xsz[2], xsz[3], 256)  # torch.Size([4(batch size), 20(height), 20(width), 256])
 
-        x3 = x3.permute(0, 3, 1, 2).contiguous()  # channels first [b, c, h, w]
-        x3 = self.lstm_fc(x3)
+        x3 = x3.permute(0, 3, 1, 2).contiguous()  # channels first [b, 256, h, w]
+        x3 = self.lstm_fc(x3) # [b, 512, h, w]
         x = x3
 
-        cls = self.rpn_class(x)
-        regression = self.rpn_regress(x)
+        cls = self.rpn_class(x) # [b, 20, h, w]
+        regression = self.rpn_regress(x) # [b, 20, h, w]
 
-        cls = cls.permute(0, 2, 3, 1).contiguous()
-        regression = regression.permute(0, 2, 3, 1).contiguous()
+        cls = cls.permute(0, 2, 3, 1).contiguous() # [b, h, w, 20]
+        regression = regression.permute(0, 2, 3, 1).contiguous() # [b, h, w, 20]
 
-        cls = cls.view(cls.size(0), cls.size(1)*cls.size(2)*10, 2)
-        regression = regression.view(regression.size(0), regression.size(1)*regression.size(2)*10, 2)
+        cls = cls.view(cls.size(0), cls.size(1)*cls.size(2)*10, 2) # [b, h * w * 10, 2]
+        regression = regression.view(regression.size(0), regression.size(1)*regression.size(2)*10, 2) # [b, h * w * 10, 2]
 
         return cls, regression
 

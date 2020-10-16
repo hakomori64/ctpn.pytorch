@@ -29,6 +29,7 @@ def save_checkpoint(state, epoch, loss_cls, loss_regr, loss, ext='pth'):
     print('saving to {}'.format(check_path))
 
 def weights_init(m):
+    # 層ごとに学習パラメータを初期化する
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
         m.weight.data.normal_(0.0, 0.02)
@@ -38,12 +39,15 @@ def weights_init(m):
 
 
 if __name__ == '__main__':
-    dataset = VOCDataset(config.img_dir, config.label_dir)
+    dataset = VOCDataset(config.img_dir, config.label_dir) # 学習用データを収めるディレクトリ、対応するラベルを収めるディレクトリ
+    # datasetから一軒ずつ取得する
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=config.num_workers)
     
+    # モデルの作成
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = CTPN_Model().to(device)
 
+    # すでに学習済みのモデルがある場合はそれを使う
     checkpoints_weight = config.pretrained_weights
     print('exist pretrained ',os.path.exists(checkpoints_weight))   
     if os.path.exists(checkpoints_weight):
@@ -52,19 +56,20 @@ if __name__ == '__main__':
         model.load_state_dict(cc['model_state_dict'])
         resume_epoch = cc['epoch']
     else:
+        # ない場合は
         model.apply(weights_init)
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [35, 55, 70], gamma=0.1, last_epoch=-1)
 
-    critetion_cls = RPN_CLS_Loss(device)
-    critetion_regr = RPN_REGR_Loss(device)
+    critetion_cls = RPN_CLS_Loss(device) # 検出対象かどうかの判断が合っているかどうか
+    critetion_regr = RPN_REGR_Loss(device) # 検出対象だとしてずれがどれくらいか
     
     best_loss_cls = 100
     best_loss_regr = 100
     best_loss = 100
     best_model = None
-    epochs += resume_epoch
+    epochs += resume_epoch # チェックポイントがあったらその分だけepoch数を増やす
 
     viz = visdom.Visdom(env='ctpn-train')
     n_iter = 0
@@ -120,6 +125,7 @@ if __name__ == '__main__':
         epoch_loss /= epoch_size
         print('Epoch:{}--{:.4f}--{:.4f}--{:.4f}'.format(epoch, epoch_loss_cls, epoch_loss_regr, epoch_loss))
         if best_loss_cls > epoch_loss_cls or best_loss_regr > epoch_loss_regr or best_loss > epoch_loss:
+            # ロスが小さくなるモデルのパラメータの設定を見つけたら、checkpointsに保存しておく
             best_loss = epoch_loss
             best_loss_regr = epoch_loss_regr
             best_loss_cls = epoch_loss_cls
